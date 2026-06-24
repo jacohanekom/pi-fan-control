@@ -1,0 +1,13 @@
+Package: pi-fan-control
+Version: 1.0.0+202606031456
+Architecture: arm64
+Maintainer: baboonwatch
+Installed-Size: 98
+Depends: libc6 (>= 2.34), libgcc-s1 (>= 3.0), liblgpio1 (>= 0.1.6.1), libstdc++6 (>= 6)
+Section: utils
+Priority: optional
+Description: PWM Fan Control for Raspberry Pi 5
+ Controls a 4-wire PWM fan based on CPU temperature.
+ Supports RPM monitoring via tach wire.
+ Speed and temperature thresholds configurable via /etc/pi-fan-control.conf.
+ Socket interface for manual speed control and status monitoring.

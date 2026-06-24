@@ -1,0 +1,5 @@
+76071c1c8ea14f45df84ecb3590d9300  lib/systemd/system/pi-fan-control.service
+d32c984a619a8ce3087b3e3008b113d0  usr/bin/fan_control
+89c1fdbfda49f54883343ba89388a264  usr/share/doc/pi-fan-control/changelog.gz
+71f343db6619e8c64514469e9240857f  usr/share/pi-fan-control/Makefile
+1fe04e5767c1507415a4c89be19cc41f  usr/share/pi-fan-control/src/main.cpp
