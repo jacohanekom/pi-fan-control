@@ -1,0 +1,61 @@
+# Builds the pi-fan-control Debian package NATIVELY for arm64, using a
+# real arm64 Docker daemon (e.g. colima on Apple Silicon, which runs a
+# genuine arm64 Linux VM — no QEMU emulation involved despite the host
+# being a Mac). Same approach as the sibling picam-raw/picam-hailo/
+# picam-orchestrator-go/picam-frontend-go/mp3-player projects'
+# Dockerfile.native-arm64.
+#
+# liblgpio-dev isn't in Debian's own repos (checked: no candidate at all
+# there) but is a plain public package on Raspberry Pi's own apt repo
+# (archive.raspberrypi.com) — same repo picam-raw/picam-hailo already use
+# for libcamera-dev/hailort. No APT pinning needed here, unlike those:
+# lgpio is a small, mostly self-contained library whose dependency chain
+# doesn't overlap core packages like libc6 (the actual problem that
+# required pinning for picam-raw's cross-build attempt).
+#
+# Usage (from this directory, on a genuinely arm64 Docker host):
+#   docker build --platform linux/arm64 -f Dockerfile.native-arm64 -t pi-fan-control-builder .
+#   docker create --name pi-fan-control-extract pi-fan-control-builder
+#   docker cp pi-fan-control-extract:/out ./dist
+#   docker rm pi-fan-control-extract
+
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        debhelper \
+        devscripts \
+        curl \
+        gnupg \
+        ca-certificates \
+    && curl -fsSL -o /tmp/rpi.gpg.key https://archive.raspberrypi.com/debian/raspberrypi.gpg.key \
+    && gpg --dearmor -o /usr/share/keyrings/raspberrypi.gpg /tmp/rpi.gpg.key \
+    && rm -f /tmp/rpi.gpg.key \
+    && echo 'deb [signed-by=/usr/share/keyrings/raspberrypi.gpg] https://archive.raspberrypi.com/debian/ bookworm main' \
+        > /etc/apt/sources.list.d/raspberrypi.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends liblgpio-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+# Stamp a build-time version (base version + UTC date/time as a Debian
+# local-version suffix — see picam-orchestrator-go/Dockerfile.native-arm64
+# for the rationale). No "-1" revision suffix, matching this project's
+# own checked-in convention (1.0.0+202606031456, no trailing "-N").
+# Timestamp is a plain contiguous digit run (YYYYMMDDHHMMSS, no
+# separator) for the same reason as picam-raw/picam-hailo: dpkg compares
+# maximal digit runs as arbitrary-precision integers, and a dot would
+# end that run early, making a chronologically later build compare as
+# an EARLIER version.
+RUN set -e; \
+    BASEVER="$(dpkg-parsechangelog -S Version | sed -E 's/\+.*//')"; \
+    TS="$(date -u +%Y%m%d%H%M%S)"; \
+    DEBEMAIL="jhanekom@gmail.com" DEBFULLNAME="Jaco Hanekom" \
+        dch --newversion "${BASEVER}+${TS}" --distribution stable --force-distribution \
+        "Automated native arm64 build (UTC ${TS})."; \
+    dpkg-buildpackage -us -uc -b
+
+# Build artifacts land one directory above the source tree by default.
+RUN mkdir -p /out && cp /*.deb /*.changes /*.buildinfo /out/ 2>/dev/null || cp /*.deb /out/
