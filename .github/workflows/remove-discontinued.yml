@@ -1,0 +1,151 @@
+name: Remove discontinued packages
+
+# One-off, manually triggered cleanup: pi-fan-control and waveshare-ups are
+# both discontinued and no longer built. Removes both from the shared
+# aipicam APT repo (main and nightly channels) so new installs don't pick
+# them up, without touching other packages in the same repo. Deleted again
+# once run.
+on:
+  workflow_dispatch:
+
+jobs:
+  remove:
+    runs-on: ubuntu-24.04-arm
+    env:
+      R2_BUCKET: aipicam-test-packages
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: "true"
+    steps:
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            reprepro gnupg curl ca-certificates unzip
+
+      - name: Install AWS CLI
+        run: |
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o awscliv2.zip
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+
+      - name: Import GPG signing key
+        run: printf '%s' "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+
+      - name: Render reprepro config
+        run: |
+          mkdir -p apt-repo/conf
+          cat > apt-repo/conf/distributions <<EOF
+          Origin: aipicam
+          Label: aipicam
+          Codename: nightly
+          Architectures: armhf arm64
+          Components: main
+          Description: APT repository for aipicam Raspberry Pi packages (nightly builds, every push)
+          SignWith: ${{ secrets.GPG_KEY_ID }}
+
+          Origin: aipicam
+          Label: aipicam
+          Codename: main
+          Architectures: armhf arm64
+          Components: main
+          Description: APT repository for aipicam Raspberry Pi packages (tagged releases)
+          SignWith: ${{ secrets.GPG_KEY_ID }}
+          EOF
+
+      # Same lock dance as every project's publish step (see their build.yml) --
+      # guards the fetch/modify/publish critical section against a concurrent
+      # publish from another repo.
+      - name: Acquire R2 publish lock
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          ENDPOINT="https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          LOCK_ID="${GITHUB_REPOSITORY}/${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          LOCK_FILE=$(mktemp)
+          printf '%s' "$LOCK_ID" > "$LOCK_FILE"
+          ELAPSED=0
+          MAX_WAIT=600
+          while ! aws s3api put-object --bucket "${R2_BUCKET}" --key _lock \
+              --body "$LOCK_FILE" --if-none-match '*' \
+              --endpoint-url "$ENDPOINT" >/dev/null 2>&1; do
+            if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+              echo "Breaking stale publish lock after ${MAX_WAIT}s"
+              aws s3api delete-object --bucket "${R2_BUCKET}" --key _lock --endpoint-url "$ENDPOINT" || true
+              ELAPSED=0
+              continue
+            fi
+            echo "Publish lock held by another run, waiting..."
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          rm -f "$LOCK_FILE"
+          echo "Lock acquired: $LOCK_ID"
+
+      - name: Fetch existing repo state from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          aws s3 sync "s3://${R2_BUCKET}" apt-repo \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
+            --exclude "conf/*"
+
+      - name: Remove discontinued packages
+        run: |
+          for codename in nightly main; do
+            reprepro -b apt-repo remove "$codename" pi-fan-control || true
+            reprepro -b apt-repo remove "$codename" waveshare-ups || true
+          done
+
+      - name: Export public key
+        run: gpg --export --armor "${{ secrets.GPG_KEY_ID }}" > apt-repo/pubkey.asc
+
+      - name: Publish repo to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          ENDPOINT="https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          aws s3 sync apt-repo "s3://${R2_BUCKET}" \
+            --endpoint-url "$ENDPOINT" \
+            --exclude "conf/*" --exclude "dists/*" --exclude "pubkey.asc" --delete
+          aws s3 sync apt-repo/dists "s3://${R2_BUCKET}/dists" \
+            --endpoint-url "$ENDPOINT" \
+            --cache-control "no-cache, must-revalidate" --delete
+          aws s3 cp apt-repo/pubkey.asc "s3://${R2_BUCKET}/pubkey.asc" \
+            --endpoint-url "$ENDPOINT" \
+            --cache-control "no-cache, must-revalidate"
+
+      - name: Purge Cloudflare cache for repo metadata
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data '{"files": [
+              "https://apt.aipicam.com/dists/nightly/InRelease",
+              "https://apt.aipicam.com/dists/nightly/Release",
+              "https://apt.aipicam.com/dists/nightly/Release.gpg",
+              "https://apt.aipicam.com/dists/nightly/main/binary-arm64/Packages",
+              "https://apt.aipicam.com/dists/nightly/main/binary-arm64/Packages.gz",
+              "https://apt.aipicam.com/dists/nightly/main/binary-armhf/Packages",
+              "https://apt.aipicam.com/dists/nightly/main/binary-armhf/Packages.gz",
+              "https://apt.aipicam.com/dists/main/InRelease",
+              "https://apt.aipicam.com/dists/main/Release",
+              "https://apt.aipicam.com/dists/main/Release.gpg",
+              "https://apt.aipicam.com/dists/main/main/binary-arm64/Packages",
+              "https://apt.aipicam.com/dists/main/main/binary-arm64/Packages.gz",
+              "https://apt.aipicam.com/dists/main/main/binary-armhf/Packages",
+              "https://apt.aipicam.com/dists/main/main/binary-armhf/Packages.gz",
+              "https://apt.aipicam.com/pubkey.asc"
+            ]}' \
+            "https://api.cloudflare.com/client/v4/zones/${{ secrets.CF_ZONE_ID }}/purge_cache"
+
+      - name: Release R2 publish lock
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          aws s3api delete-object --bucket "${R2_BUCKET}" --key _lock \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" || true
