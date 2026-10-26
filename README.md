@@ -1,5 +1,9 @@
 # pi-fan-control
 
+**Discontinued.** No longer deployed or maintained; CI no longer builds
+or publishes this package, and existing builds have been removed from
+the apt repo. This repo is archived as a historical reference only.
+
 PWM fan controller for Raspberry Pi 5. Adjusts a 4-wire fan speed based on CPU temperature and monitors RPM via the tach wire. Exposes a TCP socket for manual control and status queries.
 
 ## Requirements

@@ -1,8 +1,9 @@
 name: Build
 
+# Discontinued: no longer auto-builds on push/PR. Left as workflow_dispatch
+# only so the pipeline can still be run manually if this is ever revived.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build-deb:
